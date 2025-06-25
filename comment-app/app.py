@@ -211,53 +211,89 @@ def main():
             # センチメント分析結果
             st.subheader("😊 センチメント分析")
             col1, col2 = st.columns(2)
+            sentiment_data = summary.get('sentiment_distribution', {})
+
+            # 日本語表示のためのマッピング
+            SENTIMENT_JP_MAP = {
+                'positive': 'ポジティブ',
+                'negative': 'ネガティブ',
+                'neutral': '中立'
+            }
+            # 存在するキーのみを対象にする
+            sentiment_labels = [SENTIMENT_JP_MAP.get(key, key) for key in sentiment_data.keys()]
+            sentiment_values = [data.get('count', 0) for data in sentiment_data.values()]
             
+
             with col1:
                 # 円グラフ
-                sentiment_data = summary['sentiment_distribution']
-                fig_pie = px.pie(
-                    values=[sentiment_data['positive']['count'], sentiment_data['negative']['count'], sentiment_data['neutral']['count']],
-                    names=['ポジティブ', 'ネガティブ', '中立'],
-                    title="センチメント分布",
-                    color_discrete_map={'ポジティブ': '#00CC96', 'ネガティブ': '#EF553B', '中立': '#AB63FA'}
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
+                if sentiment_values:
+                    fig_pie = px.pie(
+                        values=sentiment_values,
+                        names=sentiment_labels, # 日本語キーを直接使用
+                        title="センチメント分布",
+                        color_discrete_map={'ポジティブ': '#00CC96', 'ネガティブ': '#EF553B', '中立': '#AB63FA'}
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.write("カテゴリデータがありません。")
             
             with col2:
                 # バーチャート
-                sentiment_df = pd.DataFrame([
-                    {'センチメント': 'ポジティブ', '件数': sentiment_data['positive']['count'], '割合(%)': sentiment_data['positive']['percentage']},
-                    {'センチメント': 'ネガティブ', '件数': sentiment_data['negative']['count'], '割合(%)': sentiment_data['negative']['percentage']},
-                    {'センチメント': '中立', '件数': sentiment_data['neutral']['count'], '割合(%)': sentiment_data['neutral']['percentage']}
-                ])
-                st.dataframe(sentiment_df, use_container_width=True)
+                if sentiment_data:
+                    sentiment_list = []
+                    for key, data in sentiment_data.items():
+                        sentiment_list.append({
+                            'センチメント': SENTIMENT_JP_MAP.get(key, key),
+                            '件数': data.get('count', 0),
+                            '割合(%)': data.get('percentage', 0.0)
+                            })
+                    sentiment_df = pd.DataFrame(sentiment_list)
+                    st.dataframe(
+                        sentiment_df,
+                        use_container_width=True,
+                        column_config={"割合(%)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)}
+                        )
+                else:
+                    st.write("センチメントデータがありません。")
             
             # カテゴリ分析結果
             st.subheader("📂 カテゴリ分析")
-            category_data = summary['category_distribution']
-            category_names = {'content': '講義内容', 'materials': '講義資料', 'management': '運営', 'others': 'その他'}
-            
+            category_data = summary.get('category_distribution', {})
+            category_names = list(category_data.keys())
+            category_values = [data.get('count', 0) for data in category_data.values()]
+
             col1, col2 = st.columns(2)
             
             with col1:
                 # カテゴリ円グラフ
-                fig_cat = px.pie(
-                    values=[category_data[key]['count'] for key in category_data.keys()],
-                    names=[category_names[key] for key in category_data.keys()],
+                if category_values:
+                    fig_cat = px.pie(
+                    values=category_values,
+                    names=category_labels,
                     title="カテゴリ分布"
-                )
-                st.plotly_chart(fig_cat, use_container_width=True)
-            
+                    )
+                    st.plotly_chart(fig_cat, use_container_width=True)
+                else:
+                    st.write("カテゴリデータがありません。")
+
             with col2:
                 # カテゴリデータフレーム
-                category_df = pd.DataFrame([
-                    {'カテゴリ': category_names[key], '件数': category_data[key]['count'], '割合(%)': f"{category_data[key]['percentage']:.1f}%"}
-                    for key in category_data.keys()
-                ])
-                st.dataframe(category_df, use_container_width=True)
-            
-        else:
-            st.info("📤 まず「データアップロード」タブでファイルをアップロードし、分析を実行してください。")
+                if category_data:
+                    category_list = []
+                    for category_name, data in category_data.items():
+                        category_list.append({
+                            'カテゴリ': category_name, # 日本語キーを直接使用
+                            '件数': data.get('count', 0),
+                            '割合(%)': data.get('percentage', 0.0)
+                        })
+                    category_df = pd.DataFrame(category_list)
+                    st.dataframe(
+                        category_df,
+                        use_container_width=True,
+                        column_config={"割合(%)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)}
+                        )
+                else:
+                    st.write("カテゴリデータがありません。")
     
     with tab3:
         st.header("詳細分析・高危険度コメント")

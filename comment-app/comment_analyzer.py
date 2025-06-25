@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from typing import Dict, List, Any
 import time
+from collections import defaultdict
 
 class CommentAnalyzer:
     def __init__(self):
@@ -15,11 +16,11 @@ class CommentAnalyzer:
             raise ValueError("GOOGLE_API_KEYが設定されていません。.envファイルに設定してください。")
         
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash')
-        
-    def analyze_comment(self, comment: str) -> Dict[str, Any]:
+        self.model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    def _analyze_single_comment_phase1(self, comment: str) -> Dict[str, Any]:
         """
-        単一のコメントを分析
+        【フェーズ1】単一のコメントを分析する（共通性は考慮しない）
         
         Args:
             comment (str): 分析対象のコメント
@@ -47,11 +48,11 @@ class CommentAnalyzer:
    *'positive':感謝、理解の進化、面白い・興味深いと感じた点など、前向きな内容。
    *'negative':不満、改善要望、理解できなかった点など、後ろ向きな内容。
    *'neutral':事実の確認、質問、単なる意見など、感情が読み取れない内容。
-2. **Category(カテゴリ分類)**:コメント内容が何について言及しているかを判断し、`講義内容`, `講義資料`, `運営`, `その他`のいずれかに分類してください。
-   *'講義内容（content）':授業で扱ったテーマ、説明の分かりやすさ、議論の内容など。
-   *'講義資料（materials)':スライドの見やすさ、資料の量、公開のタイミングなど。
-   *'運営（management）':授業のペース、時間配分、課題の量、Omnicampus, slackのツール等の使い方など。
-   *'その他（others）':上記のいずれにも当てはまらない内容。
+2. **Category(カテゴリ分類)**:コメント内容が何について言及しているかを判断し、`content`, `materials`, `management`, `others`のいずれかに分類してください。
+   *'content':授業で扱ったテーマ、説明の分かりやすさ、議論の内容など。
+   *'materials':スライドの見やすさ、資料の量、公開のタイミングなど。
+   *'management':授業のペース、時間配分、課題の量、Omnicampus, slackのツール等の使い方など。
+   *'others':上記のいずれにも当てはまらない内容。
 3. **Importance_score(重要度算出)**: コメントが「授業改善への貢献度」という観点でどれだけ重要かを評価し、1〜10の10段階でスコアを付けてください。以下の基準を参考にしてください。
     * **1-3 (低重要度)**: 個人的な感想や、改善に直接つながらない意見。(例: 「面白かったです」)
     * **4-7 (中重要度)**: 具体的な指摘や質問で、部分的な改善に繋がる可能性があるもの。(例: 「スライドの文字が見づらい」)
@@ -125,59 +126,102 @@ class CommentAnalyzer:
                 "summary": "分析エラー",
                 "keywords": []
             }
-    
+        
+    def _get_final_importance_score(self, category: str, items: List[Dict]) -> int:
+        """
+        [フェーズ２] グループ化されたコメントの共通性を評価し、最終的な重要度を算出する
+        """
+        if not items:
+            return 1
+
+        comment_summaries = "\n".join([f"- 「{item['summary']}」 (暫定重要度: {item['importance_score']})" for item in items])
+        
+        prompt = f"""
+あなたは大学の授業評価を分析するデータアナリストです。
+現在、「{category}」に関するコメントを分析しています。
+以下の通り、{len(items)}件の類似したコメントが寄せられました。
+
+# 類似コメントの要約リスト
+{comment_summaries}
+
+# あなたのタスク
+これらのコメントの**数（共通性）**と、それぞれの**内容の重要性**を総合的に判断し、このトピックに対する「最終的な重要度（Final Importance Score）」を1から10の数値で1つだけ評価してください。
+特に、同じような意見が多数寄せられている場合は、重要度を高く評価してください。
+
+あなたの回答は、評価した【数値のみ】としてください。
+
+例: 8
+"""
+        try:
+            response = self.model.generate_content(prompt)
+            # 応答から数値を抽出し、整数に変換。失敗した場合は暫定スコアの平均を返す
+            final_score = int(response.text.strip())
+            return final_score
+        except (ValueError, TypeError) as e:
+            print(f"\n最終スコアの評価エラー ({category}): {e}。暫定スコアの平均を使用します。")
+            # フォールバックとして、グループ内の暫定スコアの平均値を返す
+            avg_score = sum(item['importance_score'] for item in items) / len(items)
+            return round(avg_score)
+
     def analyze_comments_batch(self, comments: List[str], delay: float = 0.5) -> List[Dict[str, Any]]:
         """
-        複数のコメントを一括分析
-        
-        Args:
-            comments (List[str]): 分析対象のコメントリスト
-            delay (float): API呼び出し間の遅延（秒）
-            
-        Returns:
-            List[Dict[str, Any]]: 分析結果のリスト
+        [オーケストレーター] 複数のコメントを二段階分析アプローチで一括分析
         """
-        results = []
         total = len(comments)
+        if total == 0:
+            return []
+
+        # === フェーズ1: 個別分析 ===
+        print("フェーズ1: 各コメントを個別に分析中...")
+        initial_results = []
         start_time = time.time()
-        
         for i, comment in enumerate(comments):
-            if i > 0:
-                time.sleep(delay)  # API レート制限対策
-                
-            result = self.analyze_comment(comment)
-            result['original_comment'] = comment
-            result['index'] = i
-            results.append(result)
+            if i > 0: time.sleep(delay)
             
-            # 進捗表示
+            result = self._analyze_single_comment_phase1(comment)
+            result['original_comment'] = comment
+            result['index'] = i # 元の順序を保持するためのインデックス
+            initial_results.append(result)
+            
+            # (元の進捗表示ロジックはそのまま流用)
             progress = (i + 1) / total
-            if (i + 1) % 5 == 0 or i + 1 == total:
-                # プログレスバーの作成
-                bar_length = 30
-                filled_length = int(bar_length * progress)
-                bar = '█' * filled_length + '░' * (bar_length - filled_length)
-                
-                # 推定残り時間の計算
-                elapsed_time = time.time() - start_time
-                if i > 0 and elapsed_time > 0:
-                    avg_time_per_comment = elapsed_time / (i + 1)
-                    remaining_time = avg_time_per_comment * (total - i - 1)
-                    eta_str = f" | 残り時間: {int(remaining_time//60)}分{int(remaining_time%60)}秒"
-                else:
-                    eta_str = ""
-                
-                # センチメント統計の計算
-                sentiments = [r['sentiment'] for r in results[:i+1]]
-                pos_count = sentiments.count('positive')
-                neg_count = sentiments.count('negative')
-                
-                print(f"\r[{bar}] {i + 1}/{total} ({progress*100:.1f}%) | ポジティブ: {pos_count} | ネガティブ: {neg_count}{eta_str}", end="", flush=True)
-                
-                if i + 1 == total:
-                    print()  # 最後に改行
+            bar_length = 30
+            filled_length = int(bar_length * progress)
+            bar = '█' * filled_length + '░' * (bar_length - filled_length)
+            print(f"\r[{bar}] {i + 1}/{total} ({progress*100:.1f}%)", end="", flush=True)
+        print("\nフェーズ1完了。")
+
+        # === フェーズ2: 共通性の評価と重要度の再計算 ===
+        print("フェーズ2: コメントの共通性を評価し、重要度を再計算中...")
         
-        return results
+        # カテゴリに基づいてコメントをグルーピング
+        grouped_by_category = defaultdict(list)
+        for result in initial_results:
+            grouped_by_category[result['category']].append(result)
+            
+        final_results_dict = {res['index']: res for res in initial_results}
+
+        # グループごとに共通性評価を実行
+        group_count = len(grouped_by_category)
+        for i, (category, items) in enumerate(grouped_by_category.items()):
+            # コメントが2件未満のグループは共通性評価の対象外
+            if len(items) < 2:
+                continue
+
+            print(f" - カテゴリ「{category}」({len(items)}件)の共通性を評価中... ({i+1}/{group_count})")
+            
+            # 共通性を考慮した最終スコアを取得
+            final_score = self._get_final_importance_score(category, items)
+            
+            # グループ内の全コメントの importance_score を最終スコアで更新
+            for item in items:
+                final_results_dict[item['index']]['importance_score'] = final_score
+        
+        print("フェーズ2完了。")
+        
+        # 元の順序に戻してリストとして返す
+        final_results_list = [final_results_dict[i] for i in range(total)]
+        return final_results_list
     
     def generate_summary_report(self, analysis_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -195,20 +239,23 @@ class CommentAnalyzer:
         total_comments = len(analysis_results)
         
         # センチメント集計
-        sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
+        sentiment_counts = defaultdict(int)
         for result in analysis_results:
             sentiment_counts[result.get("sentiment", "neutral")] += 1
         
         # カテゴリ集計
-        category_counts = {"content": 0, "materials": 0, "management": 0, "others": 0}
-        
+        CATEGORY_MAP = {
+            "content": "講義内容",
+            "materials": "講義資料",
+            "management": "運営",
+            "others": "その他"
+        }
+        category_counts_jp = defaultdict(int)
         for result in analysis_results:
-            category = result.get("category", "others")
-            # カテゴリがすでに英語で返されているので、そのまま使用
-            if category in category_counts:
-                category_counts[category] += 1
-            else:
-                category_counts["others"] += 1
+            eng_category = result.get("category", "others")
+            # マッピングを元に日本語カテゴリに変換してカウント
+            jp_category = CATEGORY_MAP.get(eng_category, "その他")
+            category_counts_jp[jp_category] += 1
         
         # 重要度の高いコメント（スコア7以上）
         high_importance = [r for r in analysis_results if r.get("importance_score", 0) >= 7]
@@ -218,17 +265,8 @@ class CommentAnalyzer:
         
         return {
             "total_comments": total_comments,
-            "sentiment_distribution": {
-                "positive": {"count": sentiment_counts["positive"], "percentage": sentiment_counts["positive"]/total_comments*100},
-                "negative": {"count": sentiment_counts["negative"], "percentage": sentiment_counts["negative"]/total_comments*100},
-                "neutral": {"count": sentiment_counts["neutral"], "percentage": sentiment_counts["neutral"]/total_comments*100}
-            },
-            "category_distribution": {
-                "content": {"count": category_counts["content"], "percentage": category_counts["content"]/total_comments*100},
-                "materials": {"count": category_counts["materials"], "percentage": category_counts["materials"]/total_comments*100},
-                "management": {"count": category_counts["management"], "percentage": category_counts["management"]/total_comments*100},
-                "others": {"count": category_counts["others"], "percentage": category_counts["others"]/total_comments*100}
-            },
+            "sentiment_distribution": {k: {"count": v, "percentage": v/total_comments*100} for k, v in sentiment_counts.items()},
+            "category_distribution": {k: {"count": v, "percentage": v/total_comments*100} for k, v in category_counts_jp.items()},
             "high_importance_comments": len(high_importance),
             "high_risk_comments": len(high_risk),
             "top_high_risk_comments": sorted(high_risk, key=lambda x: x.get("importance_score", 0), reverse=True)[:10]
