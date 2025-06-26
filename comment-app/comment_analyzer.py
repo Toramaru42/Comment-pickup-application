@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from typing import Dict, List, Any
 import time
 from collections import defaultdict
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 GEMINI_PRICING = {
     'gemini-1.5-flash': {
@@ -13,6 +14,10 @@ GEMINI_PRICING = {
         'output': 0.375  # 100万トークンあたりの出力料金 (USD)
     },
     # 他のモデルを使う場合はここに追加
+    'gemini-1.5-pro': {
+        'input': 0.1,  # 100万トークンあたりの入力料金 (USD)
+        'output': 0.4  # 100万トークンあたりの出力料金 (USD)
+    },
     'gemini-2.0-flash': {
         'input': 0.1,  # 100万トークンあたりの入力料金 (USD)
         'output': 0.4  # 100万トークンあたりの出力料金 (USD)
@@ -24,7 +29,7 @@ GEMINI_PRICING = {
 }
 
 class CommentAnalyzer:
-    def __init__(self):
+    def __init__(self, model_name: str = 'gemini-1.5-flash'):
         """コメント分析器の初期化"""
         load_dotenv()
         api_key = os.getenv('GOOGLE_API_KEY')
@@ -32,7 +37,10 @@ class CommentAnalyzer:
             raise ValueError("GOOGLE_API_KEYが設定されていません。.envファイルに設定してください。")
         
         genai.configure(api_key=api_key)
-        self.model_name = 'gemini-1.5-flash'
+        # 引数で受け取ったモデル名を設定
+        if model_name not in GEMINI_PRICING:
+            raise ValueError(f"サポートされていないモデル名です: {model_name}")
+        self.model_name = model_name
         self.model = genai.GenerativeModel(self.model_name)
         
         # [新機能] 合計利用料金を記録する変数を初期化
@@ -63,6 +71,13 @@ class CommentAnalyzer:
         except (AttributeError, KeyError) as e:
             # usage_metadataが取得できない場合など
             print(f"\n料金計算エラー: {e}")
+
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(60), reraise=True)
+    def _call_generative_model(self, prompt: str) -> genai.types.GenerateContentResponse:
+        """APIを呼び出し、レスポンスと料金を計算するラッパー関数"""
+        response = self.model.generate_content(prompt)
+        self._calculate_and_add_cost(response)
+        return response
     
     def _analyze_single_comment_phase1(self, comment: str) -> Dict[str, Any]:
         """
@@ -128,7 +143,7 @@ class CommentAnalyzer:
 """
         
         try:
-            response = self.model.generate_content(prompt)
+            response = self._call_generative_model(prompt)
             result_text = response.text.strip()
             self._calculate_and_add_cost(response)
             
@@ -200,7 +215,7 @@ class CommentAnalyzer:
 例: 8
 """
         try:
-            response = self.model.generate_content(prompt)
+            response = self._call_generative_model(prompt)
             self._calculate_and_add_cost(response)
             # 応答から数値を抽出し、整数に変換。失敗した場合は暫定スコアの平均を返す
             final_score = int(response.text.strip())

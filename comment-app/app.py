@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from comment_analyzer import CommentAnalyzer, process_excel_file
+from comment_analyzer import CommentAnalyzer, process_excel_file, GEMINI_PRICING
 import os
 import json
 from datetime import datetime
@@ -39,6 +39,18 @@ def main():
     if api_key:
         os.environ['GOOGLE_API_KEY'] = api_key
     
+    # モデル選択機能
+    st.sidebar.markdown("### AIモデル選択")
+    MODEL_OPTIONS = list(GEMINI_PRICING.keys())
+    
+    selected_model = st.sidebar.selectbox(
+        "使用するAIモデルを選択",
+        MODEL_OPTIONS,
+        index=MODEL_OPTIONS.index(st.session_state.selected_model), # 選択を記憶
+        help="**Flash**: 高速・低コスト / **Pro**: 高性能・高コスト"
+    )
+    st.session_state.selected_model = selected_model # 選択をセッションに保存
+
     # ファイルアップロード
     st.sidebar.markdown("### ファイルアップロード")
     uploaded_file = st.sidebar.file_uploader(
@@ -121,7 +133,7 @@ def main():
                         progress_bar.progress(0.3)
                         
                         # 分析実行
-                        analyzer = CommentAnalyzer()
+                        analyzer = CommentAnalyzer(model_name=selected_model)
                         comment_columns = [
                             '【必須】本日の講義で学んだことを50文字以上で入力してください。',
                             '（任意）本日の講義で特によかった部分について、具体的にお教えください。',
