@@ -7,6 +7,22 @@ from typing import Dict, List, Any
 import time
 from collections import defaultdict
 
+GEMINI_PRICING = {
+    'gemini-1.5-flash': {
+        'input': 0.125,  # 100万トークンあたりの入力料金 (USD)
+        'output': 0.375  # 100万トークンあたりの出力料金 (USD)
+    },
+    # 他のモデルを使う場合はここに追加
+    'gemini-2.0-flash': {
+        'input': 0.1,  # 100万トークンあたりの入力料金 (USD)
+        'output': 0.4  # 100万トークンあたりの出力料金 (USD)
+    },
+    'gemini-2.5-flash': {
+        'input': 0.3,  # 100万トークンあたりの入力料金 (USD)
+        'output': 2.5  # 100万トークンあたりの出力料金 (USD)
+    }
+}
+
 class CommentAnalyzer:
     def __init__(self):
         """コメント分析器の初期化"""
@@ -16,7 +32,37 @@ class CommentAnalyzer:
             raise ValueError("GOOGLE_API_KEYが設定されていません。.envファイルに設定してください。")
         
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.model_name = 'gemini-1.5-flash'
+        self.model = genai.GenerativeModel(self.model_name)
+        
+        # [新機能] 合計利用料金を記録する変数を初期化
+        self.total_cost_usd = 0.0
+
+    def _calculate_and_add_cost(self, response: genai.types.GenerateContentResponse):
+        """
+        APIレスポンスからトークン数を取得し、料金を計算して累積する
+        """
+        try:
+            # モデルの料金情報を取得
+            pricing_info = GEMINI_PRICING.get(self.model_name)
+            if not pricing_info:
+                return
+
+            # usage_metadataからトークン数を取得
+            usage_metadata = response.usage_metadata
+            input_tokens = usage_metadata.prompt_token_count
+            output_tokens = usage_metadata.candidates_token_count
+            
+            # 料金を計算 (100万トークンあたりの価格なので、1,000,000で割る)
+            input_cost = (input_tokens / 1_000_000) * pricing_info['input']
+            output_cost = (output_tokens / 1_000_000) * pricing_info['output']
+            
+            call_cost = input_cost + output_cost
+            self.total_cost_usd += call_cost
+            
+        except (AttributeError, KeyError) as e:
+            # usage_metadataが取得できない場合など
+            print(f"\n料金計算エラー: {e}")
     
     def _analyze_single_comment_phase1(self, comment: str) -> Dict[str, Any]:
         """
@@ -84,6 +130,7 @@ class CommentAnalyzer:
         try:
             response = self.model.generate_content(prompt)
             result_text = response.text.strip()
+            self._calculate_and_add_cost(response)
             
             # JSONの抽出（```json```で囲まれている場合の処理）
             if "```json" in result_text:
@@ -154,6 +201,7 @@ class CommentAnalyzer:
 """
         try:
             response = self.model.generate_content(prompt)
+            self._calculate_and_add_cost(response)
             # 応答から数値を抽出し、整数に変換。失敗した場合は暫定スコアの平均を返す
             final_score = int(response.text.strip())
             return final_score

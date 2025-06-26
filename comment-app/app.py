@@ -19,6 +19,8 @@ if 'analysis_results' not in st.session_state:
     st.session_state.analysis_results = None
 if 'summary_report' not in st.session_state:
     st.session_state.summary_report = None
+if 'total_cost_usd' not in st.session_state:
+    st.session_state.total_cost_usd = None
 
 def main():
     st.title("📊 講義アンケート コメントピックアップアプリ")
@@ -156,6 +158,7 @@ def main():
                         # セッション状態に保存
                         st.session_state.analysis_results = all_results
                         st.session_state.summary_report = summary
+                        st.session_state.total_cost_usd = analyzer.total_cost_usd
                         
                         progress_bar.progress(1.0)
                         status_text.text("✅ 分析完了!")
@@ -178,6 +181,19 @@ def main():
         if st.session_state.summary_report:
             summary = st.session_state.summary_report
             
+            if st.session_state.total_cost_usd is not None:
+                total_cost_usd = st.session_state.total_cost_usd
+                # 参考の為替レート (実行日のレートに更新するとより良い)
+                USD_TO_JPY_RATE = 160.0 
+                total_cost_jpy = total_cost_usd * USD_TO_JPY_RATE
+
+                st.subheader("💰 API利用料金 (推定)")
+                col1, col2 = st.columns(2)
+                col1.metric("米ドル (USD)", f"${total_cost_usd:.6f}")
+                col2.metric("日本円 (JPY)", f"¥{total_cost_jpy:.4f}")
+                st.caption(f"料金はトークン数に基づいた推定値です。(参考レート: 1 USD = {USD_TO_JPY_RATE} JPY)")
+                st.divider()
+
             # KPI表示
             col1, col2, col3, col4 = st.columns(4)
             
